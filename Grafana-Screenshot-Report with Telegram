@@ -1,0 +1,135 @@
+import os
+import time
+import pyautogui
+import cv2
+import easyocr
+import webbrowser
+import requests
+
+# === TELEGRAM CONFIGURATION ===
+BOT_TOKEN = "TELEGRAM TOKEN"
+CHAT_ID = "TELEGRAM CHAT ID"
+
+# === SAVE DIRECTORY ===
+save_dir = r"C:Desktop\Grafana_Shots"
+os.makedirs(save_dir, exist_ok=True)
+
+# === FIREFOX PATH ===
+firefox_path = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+webbrowser.register('firefox', None, webbrowser.BackgroundBrowser(firefox_path))
+
+# === EASY OCR INIT ===
+reader = easyocr.Reader(['en'], gpu=False)
+
+
+# --- Helper: Send image to Telegram ---
+def send_photo(photo_path):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    with open(photo_path, "rb") as photo:
+        files = {"photo": photo}
+        data = {"chat_id": CHAT_ID, "caption": os.path.basename(photo_path)}
+        response = requests.post(url, files=files, data=data)
+        if response.status_code == 200:
+            print(f" Sent to Telegram: {os.path.basename(photo_path)}")
+        else:
+            print(f" Failed: {response.text}")
+
+
+# --- Helper: Crop using OCR keywords ---
+def crop_section(image_path, start_text, end_text, output_name):
+    print(f" Cropping section '{output_name}'...")
+    results = reader.readtext(image_path)
+    img = cv2.imread(image_path)
+    h, w, _ = img.shape
+
+    start_y, end_y = None, None
+
+    for (bbox, text, conf) in results:
+        text_clean = text.lower().strip()
+        (tl, tr, br, bl) = bbox
+        y = int(tl[1])
+
+        if start_text in text_clean and start_y is None:
+            start_y = y
+            print(f" Found START '{start_text}' at y={y}")
+
+        if end_text in text_clean and start_y is not None and y > start_y + 100:
+            end_y = y
+            print(f" Found END '{end_text}' at y={y}")
+            break
+
+    if start_y is None:
+        print(f" Start text '{start_text}' not found. Skipping crop.")
+        return None
+
+    if end_y is None:
+        print(f" End text '{end_text}' not found. Cropping until bottom.")
+        end_y = h
+
+    y_min = max(start_y - 20, 0)
+    y_max = min(end_y + 20, h)
+    crop = img[y_min:y_max, 0:w]
+
+    if crop.size == 0:
+        print(" Crop failed — empty image.")
+        return None
+
+    output_path = os.path.join(save_dir, output_name)
+    cv2.imwrite(output_path, crop)
+    print(f" Cropped and saved: {output_path}")
+    return output_path
+
+
+# --- Helper: Open and capture dashboard ---
+def capture_grafana(url, scroll=False, wait=12):
+    print(f"\n Opening Grafana: {url}")
+    webbrowser.get('firefox').open(url)
+    time.sleep(wait)
+    pyautogui.click(600, 500)
+    if scroll:
+        print(" Scrolling page...")
+        for _ in range(80):
+            pyautogui.scroll(-1500)
+            pyautogui.press("pagedown")
+            time.sleep(0.25)
+    time.sleep(2)
+    screenshot = os.path.join(save_dir, "grafana_full.png")
+    pyautogui.screenshot(screenshot)
+    print(f" Full screenshot saved: {screenshot}")
+    time.sleep(1)
+    pyautogui.hotkey("alt", "f4")
+    print("Firefox closed.")
+    return screenshot
+
+
+# === Data Domain Storage ===
+url_storage = "grafana url link"
+shot1 = capture_grafana(url_storage)
+backup_path = crop_section(shot1,
+                           start_text=" data domain storage usage percent",
+                           end_text="dell powerstore storage utilization",
+                           output_name="BackupStorage.png")
+
+# === 2️ Dell PowerStore Utilization ===
+url_dell = "grafana url link"
+shot2 = capture_grafana(url_dell)
+dell_path = crop_section(shot2,
+                         start_text="office-rv",
+                         end_text="panel title",
+                         output_name="Dell.png")
+
+# === 3️ vCenter Overview Utilization ===
+url_vcenter = "grafana url link"
+shot3 = capture_grafana(url_vcenter, scroll=True, wait=15)
+vcenter_path = crop_section(shot3,
+                            start_text="vcenter overview utilization",
+                            end_text="vcenter overview",
+                            output_name="vCenterOverviewUtilization.png")
+
+# === 4️ Send all to Telegram ===
+print("\n Sending all captured images to Telegram...")
+for path in [backup_path, dell_path, vcenter_path]:
+    if path and os.path.exists(path):
+        send_photo(path)
+
+print("\n All Grafana screenshots captured and sent successfully!")
